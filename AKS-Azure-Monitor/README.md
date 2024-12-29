@@ -45,7 +45,7 @@ Replace `<your-resource-group>`, `<your-template>.bicep`, and `<deployment-name>
 Here is an example of deploying a Bicep template named `main.bicep` to a resource group named `MyResourceGroup`:
 
 ```sh
-cd /AKS Azure Monitor
+cd /AkS-Azure-Monitor
 az deployment group validate --resource-group MyResourceGroup --template-file main.bicep
 az deployment group create --resource-group MyResourceGroup --template-file main.bicep
 az deployment group show --name mainDeployment --resource-group MyResourceGroup
