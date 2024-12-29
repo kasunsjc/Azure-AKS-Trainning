@@ -1,0 +1,111 @@
+export RESOURCE_GROUP=aks-training-demo
+export AKS_CLUSTER_NAME=aks-training-demo-01
+export LOCATION=northeurope
+export STORAGE_ACCOUNT_NAME=akssakasun
+
+az aks create --name $AKS_CLUSTER_NAME --resource-group $RESOURCE_GROUP --node-count 1 -l $LOCATION --generate-ssh-keys
+
+az aks get-credentials --name $AKS_CLUSTER_NAME --resource-group $RESOURCE_GROUP --overwrite-existing
+
+az storage account create -n akssakasun -g $RESOURCE_GROUP -l $LOCATION --sku Standard_LRS
+
+export AZURE_STORAGE_CONNECTION_STRING=$(az storage account show-connection-string -n akssakasun -g $RESOURCE_GROUP --query connectionString -o tsv)
+
+az storage share create --name aksshare --connection-string $AZURE_STORAGE_CONNECTION_STRING
+
+STORAGE_KEY=$(az storage account keys list --account-name akssakasun --resource-group $RESOURCE_GROUP --query "[0].value" -o tsv)
+
+kubectl create secret generic azure-secret --from-literal=azurestorageaccountname=akssakasun --from-literal=azurestorageaccountkey=$STORAGE_KEY
+
+export SA_SHARE_ID=$(az storage share-rm show -g $RESOURCE_GROUP --storage-account akssakasun --name aksshare -o tsv --query id)
+
+# Create the PersistentVolume and PersistentVolumeClaim
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  annotations:
+    pv.kubernetes.io/provisioned-by: file.csi.azure.com
+  name: azurefile
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: azurefile-csi
+  csi:
+    driver: file.csi.azure.com
+    volumeHandle: "$SA_SHARE_ID"
+    volumeAttributes:
+      shareName: aksshare
+    nodeStageSecretRef:
+      name: azure-secret
+      namespace: default
+  mountOptions:
+    - dir_mode=0777
+    - file_mode=0777
+    - uid=0
+    - gid=0
+    - mfsymlinks
+    - cache=strict
+    - nosharesock
+    - nobrl  # disable sending byte range lock requests to the server and for applications which have challenges with posix locks
+EOF
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: azurefile
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: azurefile-csi
+  volumeName: azurefile
+  resources:
+    requests:
+      storage: 5Gi
+EOF
+
+# Create a Pod that uses the PersistentVolumeClaim for file storage
+
+kubectl apply -f - <<EOF
+kind: Pod
+apiVersion: v1
+metadata:
+  name: mypod
+spec:
+  containers:
+    - name: mypod
+      image: mcr.microsoft.com/oss/nginx/nginx:1.15.5-alpine
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 250m
+          memory: 256Mi
+      volumeMounts:
+        - mountPath: /mnt/azure
+          name: volume
+          readOnly: false
+  volumes:
+   - name: volume
+     persistentVolumeClaim:
+       claimName: azurefile
+EOF
+
+# Verify that the Pod is running
+
+kubectl get pod mypod
+
+kubectl exec mypod -- ls /mnt/azure
+
+kubectl exec mypod -- touch /mnt/azure/testfile
+
+kubectl exec mypod -- ls /mnt/azure
+
+# Additonal commands to verify the file storage
+# Login to the Pod with the exec command and run the following 
